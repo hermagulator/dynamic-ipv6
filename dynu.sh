@@ -146,7 +146,7 @@ def update_or_create_dns_record(zone_id, domain, subdomain, ipv6):
         "type": "AAAA",
         "name": f"{subdomain}.{domain}",
         "content": ipv6,
-        "ttl": 120
+        "ttl": 60
     }
     
     if records:
