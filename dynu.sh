@@ -3,7 +3,9 @@
 # Update and install required packages
 echo "Updating package list and installing required packages..."
 sudo apt-get update
+sudo apt-get upgrade -y
 sudo apt-get install -y jq sqlite3 python3-pip
+sudo mkdir -p /opt/dynamic-ipv6
 
 # Install required Python libraries
 pip3 install requests ipaddress
@@ -57,7 +59,7 @@ read -r ipv6_subnet
 
 # Create SQLite database and table
 echo "Creating SQLite database and table..."
-sqlite3 /opt/cloudflare_config.db <<EOF
+sqlite3 /opt/dynamic-ipv6/cloudflare_config.db <<EOF
 CREATE TABLE IF NOT EXISTS config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     api_token TEXT,
@@ -75,14 +77,14 @@ EOF
 
 # Insert configuration into database
 echo "Saving configuration to the database..."
-sqlite3 /opt/cloudflare_config.db <<EOF
+sqlite3 /opt/dynamic-ipv6/cloudflare_config.db <<EOF
 INSERT INTO config (api_token, email, domain, zone_id, subdomain, ipv6_subnet)
 VALUES ('$CLOUDFLARE_API_KEY', '$CLOUDFLARE_EMAIL', '$selected_domain', '$zone_id', '$subdomain', '$ipv6_subnet');
 EOF
 
 # Create the Python script
 echo "Creating the Python script..."
-cat << 'EOF' > /opt/cloudflare_ipv6_updater.py
+cat << 'EOF' > /opt/dynamic-ipv6/cloudflare_ipv6_updater.py
 import requests
 import sqlite3
 import random
@@ -94,7 +96,7 @@ logging.basicConfig(filename='/var/log/cloudflare_ipv6_updater.log', level=loggi
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load configuration from the database
-conn = sqlite3.connect('/opt/cloudflare_config.db')
+conn = sqlite3.connect('/opt/dynamic-ipv6/cloudflare_config.db')
 cursor = conn.cursor()
 cursor.execute("SELECT api_token, email, domain, zone_id, subdomain, ipv6_subnet FROM config ORDER BY id DESC LIMIT 1;")
 config = cursor.fetchone()
@@ -197,9 +199,9 @@ if __name__ == "__main__":
 EOF
 
 # Set permissions for the Python script
-sudo chmod +x /opt/cloudflare_ipv6_updater.py
+sudo chmod +x /opt/dynamic-ipv6/cloudflare_ipv6_updater.py
 
 # Setup cron job to run the Python script every minute
-echo "* * * * * /usr/bin/python3 /opt/cloudflare_ipv6_updater.py" | sudo tee /etc/cron.d/cloudflare_ipv6_updater
+echo "* * * * * /usr/bin/python3 /opt/dynamic-ipv6/cloudflare_ipv6_updater.py" | sudo tee /etc/cron.d/cloudflare_ipv6_updater
 
-echo "Setup complete. The Python script has been saved to /opt/cloudflare_ipv6_updater.py and will run every minute."
+echo "Setup complete. The Python script has been saved to /opt/dynamic-ipv6/cloudflare_ipv6_updater.py and will run every minute."
