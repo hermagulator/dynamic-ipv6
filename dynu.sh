@@ -116,7 +116,7 @@ def is_ipv6_used(ipv6):
     return cursor.fetchone() is not None
 
 def fetch_dns_records(zone_id, domain, subdomain):
-    url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?name={subdomain}.{domain}"
+    url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?type=AAAA&name={subdomain}.{domain}"
     headers = {
         "X-Auth-Key": api_token,
         "X-Auth-Email": email,
@@ -133,7 +133,7 @@ def fetch_dns_records(zone_id, domain, subdomain):
     
     return result.get('result', [])
 
-def update_dns_record(zone_id, domain, subdomain, ipv6):
+def update_or_create_dns_record(zone_id, domain, subdomain, ipv6):
     records = fetch_dns_records(zone_id, domain, subdomain)
     
     headers = {
@@ -152,17 +152,21 @@ def update_dns_record(zone_id, domain, subdomain, ipv6):
     if records:
         # Update existing record
         record_id = records[0]['id']
-        response = requests.put(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}", headers=headers, json=data)
+        url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}"
+        response = requests.put(url, headers=headers, json=data)
+        action = "updated"
     else:
         # Create new record
-        response = requests.post(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records", headers=headers, json=data)
+        url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"
+        response = requests.post(url, headers=headers, json=data)
+        action = "created"
     
     result = response.json()
     if result.get('success', False):
-        logging.info(f"Successfully {'updated' if records else 'created'} DNS record for {subdomain}.{domain} with {ipv6}")
+        logging.info(f"Successfully {action} DNS record for {subdomain}.{domain} with {ipv6}")
         return True
     else:
-        logging.error(f"Failed to {'update' if records else 'create'} DNS record. Status code: {response.status_code}")
+        logging.error(f"Failed to {action} DNS record. Status code: {response.status_code}")
         if 'errors' in result and result['errors']:
             logging.error(f"Error: {result['errors'][0]['message']}")
         else:
@@ -180,12 +184,12 @@ def main():
         logging.info(f"Regenerated IPv6 address: {new_ipv6}")
     
     # Update or create DNS record
-    if update_dns_record(zone_id, selected_domain, subdomain, new_ipv6):
+    if update_or_create_dns_record(zone_id, selected_domain, subdomain, new_ipv6):
         # Insert new IPv6 into database
         cursor.execute("INSERT INTO used_ips (ipv6) VALUES (?)", (new_ipv6,))
         conn.commit()
     else:
-        logging.warning("Failed to update DNS record. Not inserting into database.")
+        logging.warning("Failed to update or create DNS record. Not inserting into database.")
 
 if __name__ == "__main__":
     main()
