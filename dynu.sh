@@ -21,6 +21,7 @@ if ! command -v jq &> /dev/null; then
     echo "jq installed successfully."
 fi
 
+
 # Prompt for the Cloudflare API Token
 read -p "Enter your Cloudflare API Token: " CLOUDFLARE_API_TOKEN
 
@@ -30,8 +31,21 @@ domains=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones" \
     -H "Content-Type: application/json" | jq -r '.result[] | .name + " " + .id')
 
 if [ -z "$domains" ]; then
-    echo "No domains found. Please check your API token."
-    exit 1
+    echo "No domains found using the API token. Let's enter the domain manually."
+    read -p "Enter your domain name: " selected_domain
+    read -p "Enter your zone ID: " selected_zone_id
+else
+    # Show domain list and prompt user to select one
+    echo "Available Domains:"
+    select domain in $domains; do
+        if [ -n "$domain" ]; then
+            selected_domain=$(echo $domain | cut -d ' ' -f 1)
+            selected_zone_id=$(echo $domain | cut -d ' ' -f 2)
+            break
+        else
+            echo "Invalid selection. Please try again."
+        fi
+    done
 fi
 
 # Show domain list and prompt user to select one
