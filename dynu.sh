@@ -1,5 +1,26 @@
 #!/bin/bash
 
+# Check if jq is installed, and if not, install it
+if ! command -v jq &> /dev/null; then
+    echo "jq could not be found. Installing jq..."
+    # Detect the package manager and install jq
+    if [ -x "$(command -v apt-get)" ]; then
+        sudo apt-get update
+        sudo apt-get install -y jq
+    elif [ -x "$(command -v yum)" ]; then
+        sudo yum install -y epel-release
+        sudo yum install -y jq
+    elif [ -x "$(command -v dnf)" ]; then
+        sudo dnf install -y jq
+    elif [ -x "$(command -v brew)" ]; then
+        brew install jq
+    else
+        echo "Package manager not detected. Please install jq manually."
+        exit 1
+    fi
+    echo "jq installed successfully."
+fi
+
 # Prompt for the Cloudflare API Token
 read -p "Enter your Cloudflare API Token: " CLOUDFLARE_API_TOKEN
 
