@@ -92,10 +92,10 @@ conn = sqlite3.connect('/opt/cloudflare_config.db')
 cursor = conn.cursor()
 cursor.execute("SELECT api_token, email, domain, zone_id, subdomain, ipv6_subnet FROM config ORDER BY id DESC LIMIT 1;")
 config = cursor.fetchone()
-CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, selected_domain, zone_id, subdomain, subnet_prefix = config
+api_token, email, selected_domain, zone_id, subdomain, subnet_prefix = config
 
 # Print configuration for debugging
-print(f"API Key: {CLOUDFLARE_API_KEY}")
+print(f"API Key: {api_token}")
 print(f"Domain: {selected_domain}")
 print(f"Zone ID: {zone_id}")
 print(f"Subdomain: {subdomain}")
@@ -116,8 +116,8 @@ def update_dns_record(zone_id, domain, subdomain, ipv6):
     # Find existing record
     url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?name={subdomain}.{domain}"
     headers = {
-        "X-Auth-Key": CLOUDFLARE_API_KEY,
-        "X-Auth-Email": CLOUDFLARE_EMAIL,
+        "X-Auth-Key": api_token,
+        "X-Auth-Email": email,
         "Content-Type": "application/json"
     }
     
