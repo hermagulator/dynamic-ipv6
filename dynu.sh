@@ -1,90 +1,88 @@
 #!/bin/bash
 
-# Check if jq is installed, and if not, install it
-if ! command -v jq &> /dev/null; then
-    echo "jq could not be found. Installing jq..."
-    # Detect the package manager and install jq
-    if [ -x "$(command -v apt-get)" ]; then
-        sudo apt-get update
-        sudo apt-get install -y jq
-    elif [ -x "$(command -v yum)" ]; then
-        sudo yum install -y epel-release
-        sudo yum install -y jq
-    elif [ -x "$(command -v dnf)" ]; then
-        sudo dnf install -y jq
-    elif [ -x "$(command -v brew)" ]; then
-        brew install jq
-    else
-        echo "Package manager not detected. Please install jq manually."
-        exit 1
-    fi
-    echo "jq installed successfully."
+# Update and install required packages
+echo "Updating package list and installing required packages..."
+sudo apt-get update
+sudo apt-get install -y jq sqlite3 python3-pip
+
+# Install requests library for Python
+pip3 install requests
+
+# Prompt for Cloudflare Global API Key and Email
+echo "Enter your Cloudflare Global API Key:"
+read -r CLOUDFLARE_API_KEY
+echo "Enter your Cloudflare account email:"
+read -r CLOUDFLARE_EMAIL
+
+# List domains using the Cloudflare API
+echo "Fetching domains from Cloudflare..."
+response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones" \
+  -H "X-Auth-Key: $CLOUDFLARE_API_KEY" \
+  -H "X-Auth-Email: $CLOUDFLARE_EMAIL" \
+  -H "Content-Type: application/json")
+
+# Extract domain names and zone IDs
+domains=$(echo "$response" | jq -r '.result[] | "\(.name) \(.id)"')
+echo "Available domains:"
+echo "$domains"
+
+# Let user select a domain
+echo "Enter the domain name you want to select:"
+read -r selected_domain
+
+# Validate the selected domain
+zone_id=$(echo "$domains" | grep "$selected_domain" | awk '{print $2}')
+if [ -z "$zone_id" ]; then
+  echo "Domain not found. Exiting."
+  exit 1
 fi
 
+echo "Selected domain: $selected_domain (Zone ID: $zone_id)"
 
-# Prompt for the Cloudflare API Token
-read -p "Enter your Cloudflare API Token: " CLOUDFLARE_API_TOKEN
+# Let user choose between manual or random subdomain
+echo "Do you want the subdomain to be manual or random? (manual/random)"
+read -r choice
 
-# List domains using Cloudflare API
-domains=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones" \
-    -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-    -H "Content-Type: application/json" | jq -r '.result[] | .name + " " + .id')
-
-if [ -z "$domains" ]; then
-    echo "No domains found using the API token. Let's enter the domain manually."
-    read -p "Enter your domain name: " selected_domain
-    read -p "Enter your zone ID: " selected_zone_id
+if [ "$choice" = "manual" ]; then
+  echo "Enter the desired subdomain:"
+  read -r subdomain
 else
-    # Show domain list and prompt user to select one
-    echo "Available Domains:"
-    select domain in $domains; do
-        if [ -n "$domain" ]; then
-            selected_domain=$(echo $domain | cut -d ' ' -f 1)
-            selected_zone_id=$(echo $domain | cut -d ' ' -f 2)
-            break
-        else
-            echo "Invalid selection. Please try again."
-        fi
-    done
+  subdomain=$(tr -dc a-z0-9 </dev/urandom | head -c 8)
+  echo "Generated random subdomain: $subdomain"
 fi
 
-# Show domain list and prompt user to select one
-echo "Available Domains:"
-select domain in $domains; do
-    if [ -n "$domain" ]; then
-        selected_domain=$(echo $domain | cut -d ' ' -f 1)
-        selected_zone_id=$(echo $domain | cut -d ' ' -f 2)
-        break
-    else
-        echo "Invalid selection. Please try again."
-    fi
-done
+# Prompt for IPv6 subnet
+echo "Enter your IPv6 subnet (e.g., 2001:db8:2001:db8::/64):"
+read -r ipv6_subnet
 
-# Ask user if subdomain should be random or manual
-read -p "Do you want the subdomain to be random? (yes/no): " random_subdomain_choice
+# Create SQLite database and table
+echo "Creating SQLite database and table..."
+sqlite3 /opt/cloudflare_config.db <<EOF
+CREATE TABLE IF NOT EXISTS config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_token TEXT,
+    email TEXT,
+    domain TEXT,
+    zone_id TEXT,
+    subdomain TEXT,
+    ipv6_subnet TEXT
+);
+CREATE TABLE IF NOT EXISTS used_ips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ipv6 TEXT UNIQUE
+);
+EOF
 
-if [[ "$random_subdomain_choice" == "yes" ]]; then
-    subdomain=$(tr -dc a-z0-9 </dev/urandom | head -c 8)
-    echo "Random subdomain generated: $subdomain"
-else
-    read -p "Enter your desired subdomain: " subdomain
-fi
+# Insert configuration into database
+echo "Saving configuration to the database..."
+sqlite3 /opt/cloudflare_config.db <<EOF
+INSERT INTO config (api_token, email, domain, zone_id, subdomain, ipv6_subnet)
+VALUES ('$CLOUDFLARE_API_KEY', '$CLOUDFLARE_EMAIL', '$selected_domain', '$zone_id', '$subdomain', '$ipv6_subnet');
+EOF
 
-# Get IPv6 subnet from user
-read -p "Enter your IPv6 subnet (e.g., 2001:db8:2001:db8::/64): " ipv6_subnet
-
-# Strip the /64 part from the subnet to get the prefix
-subnet_prefix=$(echo $ipv6_subnet | cut -d '/' -f 1)
-
-# Create SQLite database if it doesn't exist
-db_file="/opt/cloudflare_config.db"
-sqlite3 $db_file "CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, api_token TEXT, domain TEXT, zone_id TEXT, subdomain TEXT, ipv6_subnet TEXT);"
-
-# Insert the provided configuration into the database
-sqlite3 $db_file "INSERT INTO config (api_token, domain, zone_id, subdomain, ipv6_subnet) VALUES ('$CLOUDFLARE_API_TOKEN', '$selected_domain', '$selected_zone_id', '$subdomain', '$subnet_prefix');"
-
-# Python script content
-python_script_content=$(cat <<EOF
+# Create the Python script
+echo "Creating the Python script..."
+cat << 'EOF' > /opt/cloudflare_ipv6_updater.py
 import requests
 import sqlite3
 import random
@@ -92,9 +90,16 @@ import random
 # Load configuration from the database
 conn = sqlite3.connect('/opt/cloudflare_config.db')
 cursor = conn.cursor()
-cursor.execute("SELECT api_token, domain, zone_id, subdomain, ipv6_subnet FROM config ORDER BY id DESC LIMIT 1;")
+cursor.execute("SELECT api_token, email, domain, zone_id, subdomain, ipv6_subnet FROM config ORDER BY id DESC LIMIT 1;")
 config = cursor.fetchone()
-CLOUDFLARE_API_TOKEN, selected_domain, zone_id, subdomain, subnet_prefix = config
+CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL, selected_domain, zone_id, subdomain, subnet_prefix = config
+
+# Print configuration for debugging
+print(f"API Key: {CLOUDFLARE_API_KEY}")
+print(f"Domain: {selected_domain}")
+print(f"Zone ID: {zone_id}")
+print(f"Subdomain: {subdomain}")
+print(f"IPv6 Subnet Prefix: {subnet_prefix}")
 
 # Generate a random IPv6 address from /64 subnet
 def generate_random_ipv6(subnet_prefix):
@@ -111,17 +116,41 @@ def update_dns_record(zone_id, domain, subdomain, ipv6):
     # Find existing record
     url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?name={subdomain}.{domain}"
     headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "X-Auth-Key": CLOUDFLARE_API_KEY,
+        "X-Auth-Email": CLOUDFLARE_EMAIL,
         "Content-Type": "application/json"
     }
+    
+    # Debug output for headers and URL
+    print(f"Request URL: {url}")
+    print(f"Request Headers: {headers}")
+    
     response = requests.get(url, headers=headers)
     result = response.json()
+    
+    # Debugging output
+    print(f"API response: {result}")
+
+    # Check if the response contains 'errors'
+    if 'errors' in result:
+        print(f"Error: {result['errors'][0]['message']}")
+        return False
+    
+    # Check if the response contains 'result'
+    if 'result' not in result:
+        print(f"Error: 'result' key not found in API response.")
+        print(f"API Response: {result}")
+        return False
     
     # Delete old record if it exists
     if result['result']:
         record_id = result['result'][0]['id']
-        requests.delete(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}", headers=headers)
-    
+        delete_response = requests.delete(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}", headers=headers)
+        if delete_response.status_code != 200:
+            print(f"Failed to delete existing record. Status code: {delete_response.status_code}")
+            print(f"Response: {delete_response.json()}")
+            return False
+
     # Add new DNS record
     data = {
         "type": "AAAA",
@@ -130,7 +159,12 @@ def update_dns_record(zone_id, domain, subdomain, ipv6):
         "ttl": 120
     }
     response = requests.post(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records", headers=headers, json=data)
-    return response.status_code == 200
+    if response.status_code != 200:
+        print(f"Failed to update DNS record. Status code: {response.status_code}")
+        print(f"Response: {response.json()}")
+        return False
+    
+    return True
 
 # Main routine
 def main():
@@ -153,18 +187,11 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
-)
 
-# Save the Python script to /opt directory
-python_script_path="/opt/cloudflare_ipv6_updater.py"
-echo "$python_script_content" > $python_script_path
-chmod +x $python_script_path
+# Set permissions for the Python script
+sudo chmod +x /opt/cloudflare_ipv6_updater.py
 
-# Create used_ips table in SQLite if not exists
-sqlite3 $db_file "CREATE TABLE IF NOT EXISTS used_ips (ipv6 TEXT);"
+# Setup cron job to run the Python script every minute
+echo "* * * * * /usr/bin/python3 /opt/cloudflare_ipv6_updater.py >> /var/log/cloudflare_ipv6_updater.log 2>&1" | sudo tee /etc/cron.d/cloudflare_ipv6_updater
 
-# Add the cron job to run the Python script every minute
-cronjob="* * * * * /usr/bin/python3 $python_script_path"
-(crontab -l; echo "$cronjob") | crontab -
-
-echo "Setup complete. The Python script has been saved to $python_script_path and will run every minute."
+echo "Setup complete. The Python script has been saved to /opt/cloudflare_ipv6_updater.py and will run every minute."
