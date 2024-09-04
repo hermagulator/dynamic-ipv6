@@ -86,6 +86,7 @@ cat << 'EOF' > /opt/cloudflare_ipv6_updater.py
 import requests
 import sqlite3
 import random
+import ipaddress
 
 # Load configuration from the database
 conn = sqlite3.connect('/opt/cloudflare_config.db')
@@ -111,9 +112,8 @@ def is_ipv6_used(ipv6):
     cursor.execute("SELECT * FROM used_ips WHERE ipv6 = ?", (ipv6,))
     return cursor.fetchone() is not None
 
-# Update DNS record on Cloudflare
-def update_dns_record(zone_id, domain, subdomain, ipv6):
-    # Find existing record
+# Fetch existing DNS records for the subdomain
+def fetch_dns_records(zone_id, domain, subdomain):
     url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?name={subdomain}.{domain}"
     headers = {
         "X-Auth-Key": api_token,
@@ -121,50 +121,65 @@ def update_dns_record(zone_id, domain, subdomain, ipv6):
         "Content-Type": "application/json"
     }
     
-    # Debug output for headers and URL
-    print(f"Request URL: {url}")
-    print(f"Request Headers: {headers}")
-    
     response = requests.get(url, headers=headers)
     result = response.json()
     
     # Debugging output
+    print(f"Request URL: {url}")
+    print(f"Request Headers: {headers}")
     print(f"API response: {result}")
 
-    # Check if the response contains 'errors'
-    if 'errors' in result:
-        print(f"Error: {result['errors'][0]['message']}")
-        return False
+    if not result.get('success', False):
+        print(f"Error: {result.get('errors', [{'message': 'Unknown error'}])[0]['message']}")
     
-    # Check if the response contains 'result'
-    if 'result' not in result:
-        print(f"Error: 'result' key not found in API response.")
-        print(f"API Response: {result}")
-        return False
-    
-    # Delete old record if it exists
-    if result['result']:
-        record_id = result['result'][0]['id']
-        delete_response = requests.delete(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}", headers=headers)
-        if delete_response.status_code != 200:
-            print(f"Failed to delete existing record. Status code: {delete_response.status_code}")
-            print(f"Response: {delete_response.json()}")
-            return False
+    return result.get('result', [])
 
-    # Add new DNS record
-    data = {
-        "type": "AAAA",
-        "name": f"{subdomain}.{domain}",
-        "content": ipv6,
-        "ttl": 120
-    }
-    response = requests.post(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records", headers=headers, json=data)
-    if response.status_code != 200:
-        print(f"Failed to update DNS record. Status code: {response.status_code}")
-        print(f"Response: {response.json()}")
+def is_valid_ipv6(address):
+    try:
+        ipaddress.IPv6Address(address)
+        return True
+    except ipaddress.AddressValueError:
         return False
+        
+# Update or create a DNS record on Cloudflare
+def update_or_create_dns_record(zone_id, domain, subdomain, ipv6):
+    records = fetch_dns_records(zone_id, domain, subdomain)
     
-    return True
+    headers = {
+        "X-Auth-Key": api_token,
+        "X-Auth-Email": email,
+        "Content-Type": "application/json"
+    }
+    
+    if records:
+        # Update existing record
+        record_id = records[0]['id']
+        data = {
+            "type": "AAAA",
+            "name": f"{subdomain}.{domain}",
+            "content": ipv6,
+            "ttl": 120
+        }
+        response = requests.put(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}", headers=headers, json=data)
+        if response.status_code == 200:
+            print(f"Successfully updated DNS record for {subdomain}.{domain} to {ipv6}")
+        else:
+            print(f"Failed to update DNS record. Status code: {response.status_code}")
+            print(f"Response: {response.json()}")
+    else:
+        # Create new record
+        data = {
+            "type": "AAAA",
+            "name": f"{subdomain}.{domain}",
+            "content": ipv6,
+            "ttl": 120
+        }
+        response = requests.post(f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records", headers=headers, json=data)
+        if response.status_code == 200:
+            print(f"Successfully created DNS record for {subdomain}.{domain} with {ipv6}")
+        else:
+            print(f"Failed to create DNS record. Status code: {response.status_code}")
+            print(f"Response: {response.json()}")
 
 # Main routine
 def main():
@@ -175,17 +190,20 @@ def main():
     while is_ipv6_used(new_ipv6):
         new_ipv6 = generate_random_ipv6(subnet_prefix)
     
-    # Update DNS
-    if update_dns_record(zone_id, selected_domain, subdomain, new_ipv6):
-        # Insert new IPv6 into database
-        cursor.execute("INSERT INTO used_ips (ipv6) VALUES (?)", (new_ipv6,))
-        conn.commit()
-        print(f"Updated {subdomain}.{selected_domain} to {new_ipv6}")
-    else:
-        print("Failed to update DNS record.")
+    if not is_valid_ipv6(new_ipv6):
+        print(f"Invalid IPv6 address generated: {new_ipv6}")
+        return
+    
+    # Update or create DNS record
+    update_or_create_dns_record(zone_id, selected_domain, subdomain, new_ipv6)
+    
+    # Insert new IPv6 into database
+    cursor.execute("INSERT INTO used_ips (ipv6) VALUES (?)", (new_ipv6,))
+    conn.commit()
 
 if __name__ == "__main__":
     main()
+
 EOF
 
 # Set permissions for the Python script
